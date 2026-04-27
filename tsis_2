@@ -1,0 +1,350 @@
+import pygame
+import sys
+import math
+import datetime
+from collections import deque
+
+pygame.init()
+
+# ---------- screen ----------
+WIDTH  = 900
+HEIGHT = 620
+PANEL_H = 70
+
+screen = pygame.display.set_mode((WIDTH, HEIGHT + PANEL_H))
+pygame.display.set_caption("Paint — TSIS 2")
+clock  = pygame.time.Clock()
+font   = pygame.font.SysFont("Verdana", 12)
+font_bold = pygame.font.SysFont("Verdana", 12, bold=True)
+
+# ---------- colors ----------
+PALETTE = [
+    (0,   0,   0),
+    (255, 255, 255),
+    (255, 0,   0),
+    (0,   200, 0),
+    (0,   0,   255),
+    (255, 255, 0),
+    (255, 165, 0),
+    (128, 0,   128),
+    (0,   255, 255),
+    (255, 105, 180),
+    (139, 69,  19),
+    (128, 128, 128),
+]
+
+# ---------- tools ----------
+TOOL_PENCIL   = "pencil"
+TOOL_LINE     = "line"
+TOOL_RECT     = "rect"
+TOOL_CIRCLE   = "circle"
+TOOL_ERASER   = "eraser"
+TOOL_FILL     = "fill"
+TOOL_TEXT     = "text"
+TOOL_SQUARE   = "square"
+TOOL_RTRI     = "r.tri"
+TOOL_ETRI     = "e.tri"
+TOOL_RHOMBUS  = "rhombus"
+
+ALL_TOOLS = [
+    TOOL_PENCIL, TOOL_LINE, TOOL_RECT, TOOL_CIRCLE,
+    TOOL_ERASER, TOOL_FILL, TOOL_TEXT,
+    TOOL_SQUARE, TOOL_RTRI, TOOL_ETRI, TOOL_RHOMBUS,
+]
+
+BRUSH_SIZES = [2, 5, 10]
+
+# ---------- state ----------
+current_color = (0, 0, 0)
+current_tool  = TOOL_PENCIL
+brush_idx     = 1          # index into BRUSH_SIZES
+drawing       = False
+start_pos     = None
+prev_pos      = None
+
+# text tool state
+text_active   = False
+text_pos      = None
+text_buffer   = ""
+
+# canvas
+canvas = pygame.Surface((WIDTH, HEIGHT))
+canvas.fill((255, 255, 255))
+
+
+#flood fill
+def flood_fill(surface, pos, new_color):
+    x, y = pos
+    if x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT:
+        return
+    target_color = surface.get_at((x, y))[:3]
+    if target_color == new_color:
+        return
+
+    queue = deque()
+    queue.append((x, y))
+    visited = set()
+    visited.add((x, y))
+
+    while queue:
+        cx, cy = queue.popleft()
+        if surface.get_at((cx, cy))[:3] != target_color:
+            continue
+        surface.set_at((cx, cy), new_color)
+        for nx, ny in ((cx+1,cy),(cx-1,cy),(cx,cy+1),(cx,cy-1)):
+            if 0 <= nx < WIDTH and 0 <= ny < HEIGHT and (nx,ny) not in visited:
+                visited.add((nx, ny))
+                queue.append((nx, ny))
+
+
+#shapes on a surface
+def draw_shape(surface, tool, color, p1, p2, size):
+    x1, y1 = p1
+    x2, y2 = p2
+
+    if tool == TOOL_LINE:
+        pygame.draw.line(surface, color, p1, p2, size)
+
+    elif tool == TOOL_RECT:
+        x = min(x1, x2); y = min(y1, y2)
+        w = abs(x2-x1);  h = abs(y2-y1)
+        pygame.draw.rect(surface, color, (x, y, w, h), size)
+
+    elif tool == TOOL_SQUARE:
+        side = min(abs(x2-x1), abs(y2-y1))
+        sx = x1 + (1 if x2 >= x1 else -1) * side
+        sy = y1 + (1 if y2 >= y1 else -1) * side
+        x = min(x1, sx); y = min(y1, sy)
+        pygame.draw.rect(surface, color, (x, y, side, side), size)
+
+    elif tool == TOOL_CIRCLE:
+        cx = (x1+x2)//2; cy = (y1+y2)//2
+        rx = abs(x2-x1)//2; ry = abs(y2-y1)//2
+        if rx > 0 and ry > 0:
+            pygame.draw.ellipse(surface, color, (cx-rx, cy-ry, rx*2, ry*2), size)
+
+    elif tool == TOOL_RTRI:
+        pts = [(x1, y2), (x1, y1), (x2, y2)]
+        pygame.draw.polygon(surface, color, pts, size)
+
+    elif tool == TOOL_ETRI:
+        bx = (x1+x2)/2; by = min(y1,y2)
+        h_eq = abs(x2-x1) * math.sqrt(3) / 2
+        direction = 1 if y2 >= y1 else -1
+        pts = [
+            (x1, y2),
+            (x2, y2),
+            (int(bx), int(y2 - direction * h_eq))
+        ]
+        pygame.draw.polygon(surface, color, pts, size)
+
+    elif tool == TOOL_RHOMBUS:
+        cx = (x1+x2)//2; cy = (y1+y2)//2
+        pts = [(cx, y1), (x2, cy), (cx, y2), (x1, cy)]
+        pygame.draw.polygon(surface, color, pts, size)
+
+# TOOLBAR
+
+def draw_toolbar():
+    bsize = BRUSH_SIZES[brush_idx]
+    panel_y = HEIGHT
+    pygame.draw.rect(screen, (235, 235, 240), (0, panel_y, WIDTH, PANEL_H))
+    pygame.draw.line(screen, (180, 180, 190), (0, panel_y), (WIDTH, panel_y), 2)
+
+    # color palette (row 1)
+    for i, color in enumerate(PALETTE):
+        x = 8 + i * 34
+        y = panel_y + 6
+        r = pygame.Rect(x, y, 28, 28)
+        pygame.draw.rect(screen, color, r)
+        pygame.draw.rect(screen, (80,80,80), r, 1)
+        if color == current_color:
+            pygame.draw.rect(screen, (0,0,0), r, 3)
+
+    # current color preview
+    prev_rect = pygame.Rect(8 + 12*34 + 4, panel_y + 6, 28, 28)
+    pygame.draw.rect(screen, current_color, prev_rect)
+    pygame.draw.rect(screen, (0,0,0), prev_rect, 2)
+
+    # brush size buttons (keys 1/2/3)
+    for i, s in enumerate(BRUSH_SIZES):
+        bx = 8 + i*36
+        by = panel_y + 40
+        br = pygame.Rect(bx, by, 30, 22)
+        col = (160,200,255) if i == brush_idx else (210,210,215)
+        pygame.draw.rect(screen, col, br)
+        pygame.draw.rect(screen, (100,100,120), br, 1)
+        lbl = font.render(f"{i+1}:{s}px", True, (0,0,0))
+        screen.blit(lbl, (bx+2, by+4))
+
+    # tool buttons (2 rows)
+    tools_row1 = ALL_TOOLS[:6]
+    tools_row2 = ALL_TOOLS[6:]
+    start_x = 8 + 13*34 + 4 + 34   # after palette + preview
+    for row, tools in enumerate([tools_row1, tools_row2]):
+        for i, tool in enumerate(tools):
+            tx = start_x + i * 68
+            ty = panel_y + 5 + row * 30
+            tr = pygame.Rect(tx, ty, 64, 24)
+            col = (160,200,255) if tool == current_tool else (210,210,215)
+            pygame.draw.rect(screen, col, tr)
+            pygame.draw.rect(screen, (100,100,120), tr, 1)
+            lbl = font_bold.render(tool, True, (0,0,0))
+            screen.blit(lbl, (tx + 4, ty + 5))
+
+    # hint
+    hint = font.render("Ctrl+S: save  |  C: clear  |  1/2/3: brush size", True, (100,100,120))
+    screen.blit(hint, (WIDTH - 310, panel_y + PANEL_H - 16))
+
+#toolbar
+def toolbar_click(mx, my):
+    global current_color, current_tool, brush_idx
+    panel_y = HEIGHT
+
+    # palette
+    for i, color in enumerate(PALETTE):
+        x = 8 + i * 34
+        y = panel_y + 6
+        if x <= mx <= x+28 and y <= my <= y+28:
+            current_color = color
+            return
+
+    # brush size
+    for i in range(3):
+        bx = 8 + i*36
+        by = panel_y + 40
+        if bx <= mx <= bx+30 and by <= my <= by+22:
+            brush_idx = i
+            return
+
+    # tool buttons
+    tools_row1 = ALL_TOOLS[:6]
+    tools_row2 = ALL_TOOLS[6:]
+    start_x = 8 + 13*34 + 4 + 34
+    for row, tools in enumerate([tools_row1, tools_row2]):
+        for i, tool in enumerate(tools):
+            tx = start_x + i * 68
+            ty = panel_y + 5 + row * 30
+            if tx <= mx <= tx+64 and ty <= my <= ty+24:
+                current_tool = tool
+                return
+
+#gamelooppp
+while True:
+    bsize = BRUSH_SIZES[brush_idx]
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+
+        # keyboard shortcuts
+        if event.type == pygame.KEYDOWN:
+            # brush size shortcuts
+            if event.key == pygame.K_1:
+                brush_idx = 0
+            elif event.key == pygame.K_2:
+                brush_idx = 1
+            elif event.key == pygame.K_3:
+                brush_idx = 2
+
+            # clear
+            elif event.key == pygame.K_c and not text_active:
+                canvas.fill((255, 255, 255))
+
+            # save  Ctrl+S
+            elif event.key == pygame.K_s and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"canvas_{ts}.png"
+                pygame.image.save(canvas, filename)
+                pygame.display.set_caption(f"Saved: {filename}")
+
+            # text tool input
+            elif text_active:
+                if event.key == pygame.K_RETURN:
+                    # render text onto canvas
+                    txt_surf = font.render(text_buffer, True, current_color)
+                    canvas.blit(txt_surf, text_pos)
+                    text_active = False
+                    text_buffer = ""
+                    text_pos    = None
+                elif event.key == pygame.K_ESCAPE:
+                    text_active = False
+                    text_buffer = ""
+                    text_pos    = None
+                elif event.key == pygame.K_BACKSPACE:
+                    text_buffer = text_buffer[:-1]
+                else:
+                    if event.unicode and event.unicode.isprintable():
+                        text_buffer += event.unicode
+
+        # scroll → brush size
+        if event.type == pygame.MOUSEWHEEL:
+            brush_idx = max(0, min(2, brush_idx + event.y))
+
+        # ── mouse down ──
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+
+            if my > HEIGHT:
+                toolbar_click(mx, my)
+            else:
+                # text tool
+                if current_tool == TOOL_TEXT:
+                    text_active = True
+                    text_pos    = (mx, my)
+                    text_buffer = ""
+
+                # fill tool
+                elif current_tool == TOOL_FILL:
+                    flood_fill(canvas, (mx, my), current_color)
+
+                else:
+                    drawing   = True
+                    start_pos = (mx, my)
+                    prev_pos  = (mx, my)
+
+        # ── mouse up ──
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1 and drawing:
+            mx, my = event.pos
+            my = min(my, HEIGHT - 1)
+            end_pos = (mx, my)
+
+            shape_tools = [TOOL_LINE, TOOL_RECT, TOOL_CIRCLE,
+                           TOOL_SQUARE, TOOL_RTRI, TOOL_ETRI, TOOL_RHOMBUS]
+            if current_tool in shape_tools and start_pos:
+                draw_shape(canvas, current_tool, current_color, start_pos, end_pos, bsize)
+
+            drawing   = False
+            start_pos = None
+            prev_pos  = None
+
+    # ── continuous drawing (pencil / eraser) ──
+    if drawing and current_tool in (TOOL_PENCIL, TOOL_ERASER):
+        mx, my = pygame.mouse.get_pos()
+        if my < HEIGHT:
+            color = (255, 255, 255) if current_tool == TOOL_ERASER else current_color
+            if prev_pos:
+                pygame.draw.line(canvas, color, prev_pos, (mx, my), bsize)
+            prev_pos = (mx, my)
+
+    # ── render ──
+    screen.blit(canvas, (0, 0))
+
+    # live shape preview (drawn on screen, not canvas)
+    if drawing and start_pos:
+        mx, my = pygame.mouse.get_pos()
+        my = min(my, HEIGHT - 1)
+        shape_tools = [TOOL_LINE, TOOL_RECT, TOOL_CIRCLE,
+                       TOOL_SQUARE, TOOL_RTRI, TOOL_ETRI, TOOL_RHOMBUS]
+        if current_tool in shape_tools:
+            draw_shape(screen, current_tool, current_color, start_pos, (mx, my), 1)
+
+    # text cursor preview
+    if text_active and text_pos:
+        preview = font.render(text_buffer + "|", True, current_color)
+        screen.blit(preview, text_pos)
+
+    draw_toolbar()
+    pygame.display.update()
+    clock.tick(60)

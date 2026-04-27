@@ -1,0 +1,5 @@
+pylibs/
+__pycache__/
+*.pyc
+settings.json
+snake_game.db
